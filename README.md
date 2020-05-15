@@ -1,2 +1,1 @@
-# harvardx-capstone-movielens
-HarvardX_Capstone_Movielens project submission files
+Files needed for the HarvardX Capstone Movielens project submission
