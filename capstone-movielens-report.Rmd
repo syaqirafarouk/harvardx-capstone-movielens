@@ -1,0 +1,244 @@
+---
+title: "Report on a Recommendation System Design"
+author: "Syaqira Farouk"
+date: "5/15/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This is a report on a recommendation system design that will predict ratings. To create an algorithm to predict the ratings; the movies, users and date of movie release(rounded to the start of the week) were analyzed and regularized. Root Mean Squared Error (RMSE) was the measurement used to check the quality of the predictions. Lower RMSE indicates better predictions. The dataset used in this analysis is a subset of the larger Movielens dataset that can be found here: <https://grouplens.org/datasets/movielens/latest/>
+
+The following library is required. If they have not been installed, we have to install them first before loading using the install_packages() function in R:
+
+```{r load-library}
+library(tidyverse)
+library(lubridate)
+library(caret)
+library(repmis)
+```
+
+The datasets used in this analysis can be loaded from the GitHub repository:
+
+```{r load-data}
+source_data("https://github.com/syaqirafarouk/harvardx-capstone-movielens/blob/master/capstone-data.rda?raw=true")
+```
+
+## Method/Analysis
+
+To create the algorithm we need to calculate the movie effects, the user effects and the date released effects on the ratings. These effects then have to be regularized for differing sizes.
+
+To train the algorithm, we create a train set and a test set from the edx dataset. We create a 80/20 train to test set ratio to allow the algorithm to train on more data. The timestamp is first rounded and converted to the required date and format:
+
+```{r create-partition}
+edx <- edx %>% mutate(date = round_date(as_datetime(timestamp), unit = "week"))
+
+set.seed(1,sample.kind = "Rounding")    #for R version 3.5 and earlier, use set.seed(1)
+test_index<- createDataPartition(edx$rating, times = 1, p = 0.2, list = FALSE)
+train_set<- edx[-test_index,]
+test_set<- edx[test_index,]
+
+test_set <- test_set %>%
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId") %>%
+  semi_join(train_set, by = "date")
+```
+
+
+The regularizing parameter used in this analysis is lambda. Multiple values of lambda were tested to identify the most suitable value which would minimise the RMSE of the predicted ratings and the observed ratings. The code is below:
+
+```{r identifying-lambda}
+lambdas <- seq(0, 10, 0.25)
+rmses <- sapply(lambdas, function(l){
+  mu <- mean(train_set$rating) 
+  b_i <- train_set %>%  
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  b_u <- train_set %>%
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  b_d <- train_set %>%
+    left_join(b_i, by="movieId") %>%
+    left_join(b_u, by= "userId") %>%
+    group_by(date) %>%
+    summarize(b_d = sum(rating - b_i - b_u - mu)/(n()+l))
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_i, by= "movieId") %>%
+    left_join(b_u, by= "userId") %>%
+    left_join(b_d, by= "date" ) %>%
+    mutate(pred_rating = mu + b_i + b_u + b_d) %>%
+    .$pred_rating
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+```
+
+We can visualise the change in RMSEs with differing lambda values with this plot:
+
+```{r rmses, echo=FALSE}
+qplot(lambdas,rmses)
+```
+
+We see that the best lambda value is:
+
+```{r lambda}
+lambda <- lambdas[which.min(rmses)]
+lambda 
+```
+
+Now to put the lambda into the algorithm and make the predictions, we use this code:
+
+```{r predictions}
+mu <- mean(edx$rating)
+b_i <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+lambda))
+b_u <- edx %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+lambda))
+b_d <- edx %>% 
+  left_join(b_i, by="movieId") %>%
+  left_join(b_u, by= "userId") %>%
+  group_by(date) %>%
+  summarize(b_d = sum(rating - b_i - b_u - mu)/(n()+lambda))
+predicted_ratings <- 
+  validation %>% 
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  left_join(b_i, by= "movieId") %>%
+  left_join(b_u, by= "userId") %>%
+  left_join(b_d, by= "date" ) %>%
+  mutate(pred_rating = mu + b_i + b_u + b_d) %>%
+  .$pred_rating
+```
+
+## Results
+
+Finally, we can view the predicted ratings and the comparison table:
+
+```{r comparison}
+predicted_ratings
+
+comparison <- validation %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_d, by= "date" ) %>%
+  mutate(pred_rating = mu + b_i + b_u + b_d) %>%
+  select(userId,movieId,timestamp,title,rating,pred_rating)
+
+comparison
+```
+
+We then calculate the RMSE between the predicted ratings and the observed ratings:
+
+```{r final-rmse-test}
+final_rmse<- RMSE(predicted_ratings,validation$rating)
+final_rmse
+```
+
+We can repeat the algorithm train and test with different combinations of variable effects. We can see that the RMSE of the "Movie + User + Date released effects" model has the lowest RMSE compared to the RMSEs of "Only the average", "Movie effects" and "User + Date released effects" models:
+
+```{r comparison-table, echo=FALSE}
+#"Only average effect"
+predicted_ratings1 <- 
+  validation %>% 
+    mutate(pred_rating = mu) %>%
+  .$pred_rating
+
+RMSE1<- RMSE(predicted_ratings1,validation$rating)
+
+#"Movie effects"
+rmses2 <- sapply(lambdas, function(l){
+  mu <- mean(train_set$rating)    
+  b_i <- train_set %>%  
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_i, by= "movieId") %>%
+    mutate(pred_rating = mu + b_i) %>%
+    .$pred_rating
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+
+lambda2 <- lambdas[which.min(rmses2)]
+
+b_i2 <- edx %>%  
+  group_by(movieId) %>%
+  summarize(b_i2 = sum(rating - mu)/(n()+lambda2))
+predicted_ratings2 <- 
+  validation %>% 
+  left_join(b_i2, by= "movieId") %>%
+  mutate(pred_rating = mu + b_i2) %>%
+  .$pred_rating
+
+RMSE2<- RMSE(predicted_ratings2,validation$rating)
+
+#"User + Date released effects"
+rmses3 <- sapply(lambdas, function(l){
+  mu <- mean(train_set$rating)    
+  b_u <- train_set %>%   
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - mu)/(n()+l))
+  b_d <- train_set %>%  
+    left_join(b_u, by= "userId") %>%
+    group_by(date) %>%
+    summarize(b_d = sum(rating - b_u - mu)/(n()+l))
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_u, by= "userId") %>%
+    left_join(b_d, by= "date" ) %>%
+    mutate(pred_rating = mu + b_u + b_d) %>%
+    .$pred_rating
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+
+lambda3 <- lambdas[which.min(rmses3)]
+
+b_u3 <- edx %>%   
+  group_by(userId) %>%
+  summarize(b_u3 = sum(rating - mu)/(n()+lambda3))
+b_d3 <- edx %>%  
+  left_join(b_u3, by= "userId") %>%
+  group_by(date) %>%
+  summarize(b_d3 = sum(rating - b_u3 - mu)/(n()+lambda3))
+predicted_ratings3 <- 
+  validation %>% 
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  left_join(b_u3, by= "userId") %>%
+  left_join(b_d3, by= "date" ) %>%
+  mutate(pred_rating = mu + b_u3 + b_d3) %>%
+  .$pred_rating
+
+RMSE3<- RMSE(predicted_ratings3,validation$rating)
+
+model_comparisons<- data.frame(model = c("Only average effect","Movie effects","User + Date released effects","Movie + User + Date released effects"),
+           RMSE = c(RMSE1,RMSE2,RMSE3,final_rmse))
+
+model_comparisons
+```
+
+
+## Conclusion
+
+The limitations to this algorithm is that there are still remaining residual effects from other variables; for example, by genres. These effects if accounted for could increase the model performance and reduce the RMSE of predicted ratings vs. obeserved ratings. 
+
+Generally, we see that accounting for various variable effects in the algorithm reduces the RMSE between predictions and observed ratings. 
+
+We can also see that some variable effects affects the RMSE more than other variables; the "Movie effects" model has a lower RMSE than the "User + Date released effects" model. 
+
+Future work involves extending the analysis to include other variables and eliminating the remaining residuals in the algorithm.
+
+
+## NOTES:
+## MODEL                                    RMSE
+## "Only average effect"                    1.0612018
+## "Movie effects"                          0.9438521
+## "User + Date released effects"           0.9777060
+## "Movie + User + Date released effects"   0.8646947 <-final_rmse from the analysis
