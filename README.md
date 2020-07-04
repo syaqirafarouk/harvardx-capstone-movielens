@@ -1,1 +1,1 @@
-Files needed for the HarvardX Capstone Movielens project submission
+Files needed for the HarvardX Data Science Capstone Movielens project submission
